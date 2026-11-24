@@ -8,6 +8,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\StreamedResponse;
+use Illuminate\Support\Str;
 
 class SubmissionController extends Controller
 {
@@ -56,21 +57,68 @@ class SubmissionController extends Controller
 
     public function grade(Request $request, Submission $submission): RedirectResponse
     {
-        // TODO 5a (grade): Cek apakah dosen adalah pengampu mata kuliah, validasi nilai (0-100) & catatan_dosen, lalu update submission.
-        // 1. Pastikan $submission->assignment->course->dosen_id === Auth::id(), jika tidak abort(403).
-        // 2. Validasi input 'nilai' (required|integer|min:0|max:100) dan 'catatan_dosen' (nullable|string|max:1000).
-        // 3. Simpan perubahan menggunakan $submission->update(...) dan redirect back() dengan pesan sukses.
+            // 1. Hanya dosen pengampu mata kuliah ini
+        if ($submission->assignment->course->dosen_id !== Auth::id()) {
+            abort(403, 'Akses ditolak. Anda bukan dosen pengampu mata kuliah ini.');
+        }
 
-        abort(501, 'Fitur belum diimplementasikan');
-    }
+        // 2. Validasi
+        $validated = $request->validate([
+            'nilai'         => ['required', 'integer', 'min:0', 'max:100'],
+            'catatan_dosen' => ['nullable', 'string', 'max:1000'],
+        ], [
+            'nilai.required' => 'Nilai wajib diisi.',
+            'nilai.integer'  => 'Nilai harus berupa angka bulat.',
+            'nilai.min'      => 'Nilai minimal 0.',
+            'nilai.max'      => 'Nilai maksimal 100.',
+        ]);
+
+        // 3. Simpan
+        $submission->update($validated);
+
+        return back()->with('success', 'Nilai berhasil disimpan.');
+        }
 
     public function exportCsv(Assignment $assignment): StreamedResponse
     {
-        // TODO 5b (exportCsv): Cek kepemilikan dosen, lalu gunakan response()->streamDownload() dan fputcsv() untuk mengunduh data nilai mahasiswa.
-        // 1. Pastikan $assignment->course->dosen_id === Auth::id(), jika tidak abort(403).
-        // 2. Muat relasi course.approvedStudents dan submissions dari $assignment.
-        // 3. Kembalikan response()->streamDownload(...) yang menulis header & baris CSV menggunakan fopen('php://output', 'w') dan fputcsv().
+        // 1. Cek kepemilikan dosen
+    if ($assignment->course->dosen_id !== Auth::id()) {
+        abort(403, 'Akses ditolak. Anda bukan dosen pengampu mata kuliah ini.');
+    }
 
-        abort(501, 'Fitur belum diimplementasikan');
+    // 2. Muat relasi
+    $assignment->load(['course.approvedStudents', 'submissions']);
+    $students = $assignment->course->approvedStudents;
+    $submissions = $assignment->submissions->keyBy('user_id');
+
+    $filename = 'rekap-nilai-' . Str::slug($assignment->judul) . '.csv';
+
+    // 3. Unduh sebagai CSV
+    return response()->streamDownload(function () use ($students, $submissions) {
+        $out = fopen('php://output', 'w');
+        fwrite($out, "\xEF\xBB\xBF"); // BOM agar Excel membaca UTF-8 dengan benar
+
+        fputcsv($out, ['No', 'Nama', 'NIM', 'Email', 'Status Pengumpulan', 'Waktu Pengumpulan', 'Nilai', 'Status Nilai', 'Catatan Dosen']);
+
+        foreach ($students as $i => $student) {
+            $sub = $submissions->get($student->id);
+
+            fputcsv($out, [
+                $i + 1,
+                $student->name,
+                $student->nomor_induk ?? '-',
+                $student->email,
+                $sub ? 'Sudah Mengumpulkan' : 'Belum Mengumpulkan',
+                $sub && $sub->submitted_at ? $sub->submitted_at->format('d-m-Y H:i') : '-',
+                $sub && $sub->nilai !== null ? $sub->nilai : '-',
+                $sub ? $sub->status_nilai : 'Belum Mengumpulkan',
+                $sub ? ($sub->catatan_dosen ?? '') : '',
+            ]);
+        }
+
+        fclose($out);
+    }, $filename, ['Content-Type' => 'text/csv; charset=UTF-8']);
+
+
     }
 }
